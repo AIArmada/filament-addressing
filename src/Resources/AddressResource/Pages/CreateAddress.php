@@ -7,11 +7,9 @@ namespace AIArmada\FilamentAddressing\Resources\AddressResource\Pages;
 use AIArmada\Addressing\Actions\SyncAddressAreaAssignmentsAction;
 use AIArmada\Addressing\Models\Address;
 use AIArmada\FilamentAddressing\Resources\AddressResource;
-use Filament\Resources\Pages\EditRecord;
-use Illuminate\Database\Eloquent\Model;
-use LogicException;
+use Filament\Resources\Pages\CreateRecord;
 
-final class EditAddress extends EditRecord
+final class CreateAddress extends CreateRecord
 {
     protected static string $resource = AddressResource::class;
 
@@ -20,16 +18,15 @@ final class EditAddress extends EditRecord
         return ! AddressResource::isReadOnly();
     }
 
-    protected function handleRecordUpdate(Model $record, array $data): Address
+    protected function handleRecordCreation(array $data): Address
     {
-        if (! $record instanceof Address) {
-            throw new LogicException('Expected an address record.');
-        }
+        $address = new Address;
+        $address->fill($data);
+        $address->save();
 
-        $record->update($data);
-        app(SyncAddressAreaAssignmentsAction::class)->execute($record, $this->areaAssignments());
+        app(SyncAddressAreaAssignmentsAction::class)->execute($address, $this->areaAssignments());
 
-        return $record->fresh() ?? $record;
+        return $address;
     }
 
     /** @return array<string, string|null> */
