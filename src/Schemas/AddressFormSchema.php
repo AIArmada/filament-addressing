@@ -11,13 +11,11 @@ use AIArmada\Addressing\Models\Address;
 use AIArmada\Addressing\Models\AddressArea;
 use AIArmada\Addressing\Models\AddressCountry;
 use AIArmada\Addressing\Support\AddressAreaStateBridge;
-use AIArmada\Addressing\Support\AddressingTableResolver;
 use AIArmada\Addressing\Support\CountryAddressProfileResolver;
 use AIArmada\Addressing\Support\ModelResolver;
 use AIArmada\CommerceSupport\Support\LikeSearch;
 use AIArmada\FilamentAddressing\Rules\AddressAreasBelongToCountry;
 use AIArmada\FilamentAddressing\Rules\StateBelongsToCountry;
-use Carbon\CarbonImmutable;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 
@@ -87,6 +85,11 @@ class AddressFormSchema
             ->searchable()
             ->rules(fn (callable $get): array => [new StateBelongsToCountry($get($prefix . 'country_code'))])
             ->visible(fn (callable $get): bool => self::countryHasStates($get($prefix . 'country_code')))
+            ->afterStateUpdated(function (callable $set, callable $get) use ($prefix): void {
+                foreach (self::stateDependentRoles(self::nullableString($get($prefix . 'country_code'))) as $role) {
+                    $set($prefix . 'area_assignments.' . $role, null);
+                }
+            })
             ->live();
 
         foreach ($assignmentRoles as $role) {
@@ -95,9 +98,9 @@ class AddressFormSchema
 
             $fields[] = Select::make($field)
                 ->label(function (callable $get) use ($prefix, $role): string {
-                    $definition = self::definitionForRole(self::nullableString($get($prefix . 'country_code')), $role);
+                    $definition = app(CountryAddressProfileResolver::class)->definitionForRole(self::nullableString($get($prefix . 'country_code')), $role);
 
-                    return $definition['level']->label ?? str_replace('_', ' ', ucfirst($role));
+                    return $definition === null ? str_replace('_', ' ', ucfirst($role)) : $definition['level']->label;
                 })
                 ->getSearchResultsUsing(function (string $search, callable $get) use ($prefix, $areaClass, $role): array {
                     $countryCode = $get($prefix . 'country_code');
@@ -106,7 +109,7 @@ class AddressFormSchema
                         return [];
                     }
 
-                    $definition = self::definitionForRole($countryCode, $role);
+                    $definition = app(CountryAddressProfileResolver::class)->definitionForRole($countryCode, $role);
 
                     if ($definition === null) {
                         return [];
@@ -124,24 +127,7 @@ class AddressFormSchema
                     }
 
                     if ($parentId !== null) {
-                        $query->whereHas('ancestors', function ($ancestors) use ($parentId, $definition): void {
-                            $ancestors
-                                ->whereKey($parentId)
-                                ->where(
-                                    AddressingTableResolver::resolve('area_relationships') . '.hierarchy_type',
-                                    self::hierarchyType($definition),
-                                )
-                                ->where(
-                                    AddressingTableResolver::resolve('area_relationships') . '.relationship_type',
-                                    'contains',
-                                )
-                                ->where(function ($query): void {
-                                    $query->whereNull('valid_from')->orWhereDate('valid_from', '<=', CarbonImmutable::now());
-                                })
-                                ->where(function ($query): void {
-                                    $query->whereNull('valid_until')->orWhereDate('valid_until', '>=', CarbonImmutable::now());
-                                });
-                        });
+                        $query->whereAncestorLink($parentId, self::hierarchyType($definition));
                     }
 
                     $needle = LikeSearch::contains($search);
@@ -162,7 +148,12 @@ class AddressFormSchema
                 ->rules(fn (callable $get): array => [new AddressAreasBelongToCountry($get($prefix . 'country_code'))])
                 ->default($assignmentValues[$role] ?? null)
                 ->dehydrated(false)
-                ->visible(fn (callable $get): bool => self::definitionForRole(self::nullableString($get($prefix . 'country_code')), $role) !== null)
+                ->visible(fn (callable $get): bool => app(CountryAddressProfileResolver::class)->definitionForRole(self::nullableString($get($prefix . 'country_code')), $role) !== null)
+                ->afterStateUpdated(function (callable $set, callable $get) use ($prefix, $role): void {
+                    foreach (self::childRoles(self::nullableString($get($prefix . 'country_code')), $role) as $childRole) {
+                        $set($prefix . 'area_assignments.' . $childRole, null);
+                    }
+                })
                 ->live();
         }
 
@@ -171,6 +162,35 @@ class AddressFormSchema
             ->maxLength(20);
 
         return $fields;
+    }
+
+    /**
+     * Read area assignments from raw form state.
+     *
+     * Area selects are dehydrated(false), so consumers must read them via
+     * `$form->getRawState()` and pass the result to
+     * SyncAddressAreaAssignmentsAction after saving the address.
+     *
+     * @param  array<string, mixed>  $rawState
+     * @return array<string, string|null>
+     */
+    public static function extractAreaAssignments(array $rawState, string $prefix = ''): array
+    {
+        $assignments = $rawState[$prefix . 'area_assignments'] ?? [];
+
+        if (! is_array($assignments)) {
+            return [];
+        }
+
+        $filtered = [];
+
+        foreach ($assignments as $role => $areaId) {
+            if (is_string($role) && ($areaId === null || is_string($areaId))) {
+                $filtered[$role] = $areaId;
+            }
+        }
+
+        return $filtered;
     }
 
     private static function nullableString(mixed $value): ?string
@@ -206,37 +226,12 @@ class AddressFormSchema
                         continue;
                     }
 
-                    $roles[] = self::roleForLevel($hierarchy, $level);
+                    $roles[] = CountryAddressProfileResolver::roleForLevel($hierarchy, $level);
                 }
             }
         }
 
         return array_values(array_unique($roles));
-    }
-
-    /** @return array{hierarchy: AddressHierarchyDefinition, level: AddressLevelDefinition}|null */
-    private static function definitionForRole(?string $countryCode, string $role): ?array
-    {
-        if ($countryCode === null) {
-            return null;
-        }
-
-        $hierarchies = app(CountryAddressProfileResolver::class)->hierarchies($countryCode);
-
-        foreach ($hierarchies as $hierarchy) {
-            foreach ($hierarchy->levels as $level) {
-                if ($level->kind !== 'state' && self::roleForLevel($hierarchy, $level) === $role) {
-                    return ['hierarchy' => $hierarchy, 'level' => $level];
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static function roleForLevel(AddressHierarchyDefinition $hierarchy, AddressLevelDefinition $level): string
-    {
-        return $level->assignmentRole ?? "{$hierarchy->key}_{$level->key}";
     }
 
     /** @return list<string> */
@@ -273,7 +268,7 @@ class AddressFormSchema
                     );
                 }
 
-                return self::nullableString($get($prefix . 'area_assignments.' . self::roleForLevel($definition['hierarchy'], $level)));
+                return self::nullableString($get($prefix . 'area_assignments.' . CountryAddressProfileResolver::roleForLevel($definition['hierarchy'], $level)));
             }
         }
 
@@ -284,6 +279,116 @@ class AddressFormSchema
     private static function hierarchyType(array $definition): string
     {
         return $definition['level']->hierarchyType ?? $definition['hierarchy']->key;
+    }
+
+    /**
+     * Roles whose parent chain passes through the state level.
+     *
+     * @return list<string>
+     */
+    private static function stateDependentRoles(?string $countryCode): array
+    {
+        if ($countryCode === null) {
+            return [];
+        }
+
+        $resolver = app(CountryAddressProfileResolver::class);
+        $dependents = [];
+
+        foreach (self::assignmentRoles() as $role) {
+            $definition = $resolver->definitionForRole($countryCode, $role);
+
+            if ($definition === null) {
+                continue;
+            }
+
+            $isStateDependent = self::ancestorMatches(
+                $definition['hierarchy'],
+                $definition['level'],
+                static fn (AddressLevelDefinition $ancestor): bool => $ancestor->kind === 'state',
+            );
+
+            if ($isStateDependent) {
+                $dependents[] = $role;
+            }
+        }
+
+        return $dependents;
+    }
+
+    /**
+     * Roles nested under the changed role within the same hierarchy.
+     *
+     * @return list<string>
+     */
+    private static function childRoles(?string $countryCode, string $changedRole): array
+    {
+        if ($countryCode === null) {
+            return [];
+        }
+
+        $resolver = app(CountryAddressProfileResolver::class);
+        $changed = $resolver->definitionForRole($countryCode, $changedRole);
+
+        if ($changed === null) {
+            return [];
+        }
+
+        $children = [];
+
+        foreach (self::assignmentRoles() as $role) {
+            if ($role === $changedRole) {
+                continue;
+            }
+
+            $definition = $resolver->definitionForRole($countryCode, $role);
+
+            if ($definition === null || $definition['hierarchy']->key !== $changed['hierarchy']->key) {
+                continue;
+            }
+
+            $parentKey = $changed['level']->key;
+
+            if (self::ancestorMatches($definition['hierarchy'], $definition['level'], static fn (AddressLevelDefinition $ancestor): bool => $ancestor->key === $parentKey)) {
+                $children[] = $role;
+            }
+        }
+
+        return $children;
+    }
+
+    /** @param callable(AddressLevelDefinition): bool $matches */
+    private static function ancestorMatches(AddressHierarchyDefinition $hierarchy, AddressLevelDefinition $level, callable $matches): bool
+    {
+        $byKey = [];
+
+        foreach ($hierarchy->levels as $candidate) {
+            $byKey[$candidate->key] = $candidate;
+        }
+
+        $visited = [];
+        $current = $level;
+
+        while (true) {
+            $parentKey = $current->parentKey;
+
+            if ($parentKey === null || isset($visited[$current->key])) {
+                return false;
+            }
+
+            $visited[$current->key] = true;
+            $parent = $byKey[$parentKey] ?? null;
+
+            if (! $parent instanceof AddressLevelDefinition) {
+                return false;
+            }
+
+            if ($matches($parent)) {
+                return true;
+            }
+
+            $current = $parent;
+        }
     }
 
     private static function countryHasStates(mixed $countryCode): bool
