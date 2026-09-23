@@ -6,11 +6,9 @@ namespace AIArmada\FilamentAddressing\Schemas;
 
 use AIArmada\Addressing\Contracts\CountryAddressProfile;
 use AIArmada\Addressing\Data\AddressHierarchyDefinition;
-use AIArmada\Addressing\Data\AddressLevelDefinition;
 use AIArmada\Addressing\Models\Address;
 use AIArmada\Addressing\Models\AddressArea;
 use AIArmada\Addressing\Models\AddressCountry;
-use AIArmada\Addressing\Support\AddressAreaStateBridge;
 use AIArmada\Addressing\Support\CountryAddressProfileResolver;
 use AIArmada\Addressing\Support\ModelResolver;
 use AIArmada\CommerceSupport\Support\LikeSearch;
@@ -86,7 +84,7 @@ class AddressFormSchema
             ->rules(fn (callable $get): array => [new StateBelongsToCountry($get($prefix . 'country_code'))])
             ->visible(fn (callable $get): bool => self::countryHasStates($get($prefix . 'country_code')))
             ->afterStateUpdated(function (callable $set, callable $get) use ($prefix): void {
-                foreach (self::stateDependentRoles(self::nullableString($get($prefix . 'country_code'))) as $role) {
+                foreach (app(CountryAddressProfileResolver::class)->stateDependentRoles(self::nullableString($get($prefix . 'country_code'))) as $role) {
                     $set($prefix . 'area_assignments.' . $role, null);
                 }
             })
@@ -98,9 +96,25 @@ class AddressFormSchema
 
             $fields[] = Select::make($field)
                 ->label(function (callable $get) use ($prefix, $role): string {
-                    $definition = app(CountryAddressProfileResolver::class)->definitionForRole(self::nullableString($get($prefix . 'country_code')), $role);
+                    $countryCode = self::nullableString($get($prefix . 'country_code'));
 
-                    return $definition === null ? str_replace('_', ' ', ucfirst($role)) : $definition['level']->label;
+                    if ($countryCode === null) {
+                        return str_replace('_', ' ', ucfirst($role));
+                    }
+
+                    $resolver = app(CountryAddressProfileResolver::class);
+                    $definition = $resolver->definitionForRole($countryCode, $role);
+
+                    if ($definition === null) {
+                        return str_replace('_', ' ', ucfirst($role));
+                    }
+
+                    return $resolver->levelLabel(
+                        $countryCode,
+                        $role,
+                        self::nullableString($get($prefix . 'state_id')),
+                        self::areaIdsByRole($get, $prefix, $definition['hierarchy']),
+                    ) ?? str_replace('_', ' ', ucfirst($role));
                 })
                 ->getSearchResultsUsing(function (string $search, callable $get) use ($prefix, $areaClass, $role): array {
                     $countryCode = $get($prefix . 'country_code');
@@ -109,25 +123,44 @@ class AddressFormSchema
                         return [];
                     }
 
-                    $definition = app(CountryAddressProfileResolver::class)->definitionForRole($countryCode, $role);
+                    $resolver = app(CountryAddressProfileResolver::class);
+                    $definition = $resolver->definitionForRole($countryCode, $role);
 
                     if ($definition === null) {
                         return [];
                     }
 
+                    $areaTypes = CountryAddressProfileResolver::areaTypesForLevel($definition['level']);
+                    $areaLevels = CountryAddressProfileResolver::areaLevelsForLevel($definition['level']);
+                    $hierarchyType = CountryAddressProfileResolver::hierarchyType($definition['hierarchy'], $definition['level']);
+
                     $query = $areaClass::query()
                         ->where('country_code', mb_strtoupper($countryCode))
                         ->where('is_active', true)
-                        ->when(self::areaTypes($definition['level']) !== [], fn ($query) => $query->whereIn('type', self::areaTypes($definition['level'])))
-                        ->when(self::areaLevels($definition['level']) !== [], fn ($query) => $query->whereIn('level', self::areaLevels($definition['level'])));
-                    $parentId = self::parentId($definition, $get, $prefix);
+                        ->when($areaTypes !== [], fn ($query) => $query->whereIn('type', $areaTypes))
+                        ->when($areaLevels !== [], fn ($query) => $query->whereIn('level', $areaLevels));
+
+                    $areaIds = self::areaIdsByRole($get, $prefix, $definition['hierarchy']);
+
+                    $parentId = $resolver->parentAreaIdForRole(
+                        $countryCode,
+                        $role,
+                        self::nullableString($get($prefix . 'state_id')),
+                        $areaIds,
+                        static fn (string $probeRole, string $probeParentId): bool => $areaClass::query()
+                            ->where('is_active', true)
+                            ->when($areaTypes !== [], fn ($probe) => $probe->whereIn('type', $areaTypes))
+                            ->when($areaLevels !== [], fn ($probe) => $probe->whereIn('level', $areaLevels))
+                            ->whereAncestorLink($probeParentId, $hierarchyType)
+                            ->exists(),
+                    );
 
                     if ($definition['level']->parentKey !== null && $parentId === null) {
                         return [];
                     }
 
                     if ($parentId !== null) {
-                        $query->whereAncestorLink($parentId, self::hierarchyType($definition));
+                        $query->whereAncestorLink($parentId, $hierarchyType);
                     }
 
                     $needle = LikeSearch::contains($search);
@@ -150,7 +183,7 @@ class AddressFormSchema
                 ->dehydrated(false)
                 ->visible(fn (callable $get): bool => app(CountryAddressProfileResolver::class)->definitionForRole(self::nullableString($get($prefix . 'country_code')), $role) !== null)
                 ->afterStateUpdated(function (callable $set, callable $get) use ($prefix, $role): void {
-                    foreach (self::childRoles(self::nullableString($get($prefix . 'country_code')), $role) as $childRole) {
+                    foreach (app(CountryAddressProfileResolver::class)->successorRoles(self::nullableString($get($prefix . 'country_code')), $role) as $childRole) {
                         $set($prefix . 'area_assignments.' . $childRole, null);
                     }
                 })
@@ -234,161 +267,21 @@ class AddressFormSchema
         return array_values(array_unique($roles));
     }
 
-    /** @return list<string> */
-    private static function areaTypes(AddressLevelDefinition $level): array
+    /** @return array<string, ?string> */
+    private static function areaIdsByRole(callable $get, string $prefix, AddressHierarchyDefinition $hierarchy): array
     {
-        return $level->areaTypes !== []
-            ? $level->areaTypes
-            : ($level->areaType !== null ? [$level->areaType] : []);
-    }
+        $areaIds = [];
 
-    /** @return list<int> */
-    private static function areaLevels(AddressLevelDefinition $level): array
-    {
-        return $level->areaLevels !== []
-            ? $level->areaLevels
-            : ($level->areaLevel !== null ? [$level->areaLevel] : []);
-    }
-
-    /** @param array{hierarchy: AddressHierarchyDefinition, level: AddressLevelDefinition} $definition */
-    private static function parentId(array $definition, callable $get, string $prefix): ?string
-    {
-        $parentKey = $definition['level']->parentKey;
-
-        if ($parentKey === null) {
-            return null;
-        }
-
-        foreach ($definition['hierarchy']->levels as $level) {
-            if ($level->key === $parentKey) {
-                if ($level->kind === 'state') {
-                    return AddressAreaStateBridge::areaIdForState(
-                        self::nullableString($get($prefix . 'state_id')),
-                        self::hierarchyType($definition),
-                    );
-                }
-
-                return self::nullableString($get($prefix . 'area_assignments.' . CountryAddressProfileResolver::roleForLevel($definition['hierarchy'], $level)));
-            }
-        }
-
-        return null;
-    }
-
-    /** @param array{hierarchy: AddressHierarchyDefinition, level: AddressLevelDefinition} $definition */
-    private static function hierarchyType(array $definition): string
-    {
-        return $definition['level']->hierarchyType ?? $definition['hierarchy']->key;
-    }
-
-    /**
-     * Roles whose parent chain passes through the state level.
-     *
-     * @return list<string>
-     */
-    private static function stateDependentRoles(?string $countryCode): array
-    {
-        if ($countryCode === null) {
-            return [];
-        }
-
-        $resolver = app(CountryAddressProfileResolver::class);
-        $dependents = [];
-
-        foreach (self::assignmentRoles() as $role) {
-            $definition = $resolver->definitionForRole($countryCode, $role);
-
-            if ($definition === null) {
+        foreach ($hierarchy->levels as $level) {
+            if ($level->kind === 'state') {
                 continue;
             }
 
-            $isStateDependent = self::ancestorMatches(
-                $definition['hierarchy'],
-                $definition['level'],
-                static fn (AddressLevelDefinition $ancestor): bool => $ancestor->kind === 'state',
-            );
-
-            if ($isStateDependent) {
-                $dependents[] = $role;
-            }
+            $levelRole = CountryAddressProfileResolver::roleForLevel($hierarchy, $level);
+            $areaIds[$levelRole] = self::nullableString($get($prefix . 'area_assignments.' . $levelRole));
         }
 
-        return $dependents;
-    }
-
-    /**
-     * Roles nested under the changed role within the same hierarchy.
-     *
-     * @return list<string>
-     */
-    private static function childRoles(?string $countryCode, string $changedRole): array
-    {
-        if ($countryCode === null) {
-            return [];
-        }
-
-        $resolver = app(CountryAddressProfileResolver::class);
-        $changed = $resolver->definitionForRole($countryCode, $changedRole);
-
-        if ($changed === null) {
-            return [];
-        }
-
-        $children = [];
-
-        foreach (self::assignmentRoles() as $role) {
-            if ($role === $changedRole) {
-                continue;
-            }
-
-            $definition = $resolver->definitionForRole($countryCode, $role);
-
-            if ($definition === null || $definition['hierarchy']->key !== $changed['hierarchy']->key) {
-                continue;
-            }
-
-            $parentKey = $changed['level']->key;
-
-            if (self::ancestorMatches($definition['hierarchy'], $definition['level'], static fn (AddressLevelDefinition $ancestor): bool => $ancestor->key === $parentKey)) {
-                $children[] = $role;
-            }
-        }
-
-        return $children;
-    }
-
-    /** @param callable(AddressLevelDefinition): bool $matches */
-    private static function ancestorMatches(AddressHierarchyDefinition $hierarchy, AddressLevelDefinition $level, callable $matches): bool
-    {
-        $byKey = [];
-
-        foreach ($hierarchy->levels as $candidate) {
-            $byKey[$candidate->key] = $candidate;
-        }
-
-        $visited = [];
-        $current = $level;
-
-        while (true) {
-            $parentKey = $current->parentKey;
-
-            if ($parentKey === null || isset($visited[$current->key])) {
-                return false;
-            }
-
-            $visited[$current->key] = true;
-            $parent = $byKey[$parentKey] ?? null;
-
-            if (! $parent instanceof AddressLevelDefinition) {
-                return false;
-            }
-
-            if ($matches($parent)) {
-                return true;
-            }
-
-            $current = $parent;
-        }
+        return $areaIds;
     }
 
     private static function countryHasStates(mixed $countryCode): bool
