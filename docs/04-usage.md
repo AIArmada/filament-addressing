@@ -175,17 +175,20 @@ When owner mode is enabled, the attach record picker only offers addresses owned
 Only enable this for trusted admin panels.
 
 ```php
-'addresses' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\Address::class,
+'resources' => [
+    'addresses' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\Address::class,
+    ],
 ],
 ```
 
 If `features.address_export` is enabled, the central Address resource also shows a built-in export action.
 
-> **warning**
-> If addresses are owner-scoped, verify `getEloquentQuery()` and action handlers are owner-safe before enabling this resource.
+:::warning
+If addresses are owner-scoped, verify `getEloquentQuery()` and action handlers are owner-safe before enabling this resource.
+:::
 
 ## Snapshot Resource
 

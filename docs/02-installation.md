@@ -68,12 +68,12 @@ Example:
 
 ```bash
 php artisan migrate
-php artisan db:seed --class="AIArmada\Addressing\Database\Seeders\AddressCountrySeeder"
+php artisan address:seed-countries
 ```
 
 ## Verify
 
 ```bash
-./vendor/bin/pest --parallel tests/src/FilamentAddressing
+./vendor/bin/pest --parallel packages/filament-addressing/tests
 ./vendor/bin/phpstan analyse packages/filament-addressing/src --level=6
 ```

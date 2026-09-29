@@ -13,9 +13,8 @@ config/filament-addressing.php
 Sections are ordered as:
 
 1. Navigation
-2. Tables
-3. Features
-4. Resources
+2. Features
+3. Resources
 
 ## Navigation
 
@@ -39,12 +38,8 @@ Sections are ordered as:
 
 Use this to control menu visibility, grouping, ordering, and icons.
 
-The `enabled` flag controls whether the adapter registers the resource with the Filament panel. The `sort` value is the base order for country, state, city, area, postcode, address, and snapshot resources.
+The `enabled` flag controls whether the adapter registers the resource with the Filament panel. The `sort` value is the base order for country, state, city, area, postcode, address, snapshot, and resolution gap resources.
 Each resource reads its icon from `navigation.icons.*`.
-
-## Tables
-
-This package has no `tables` config section. Table behaviour is configured per resource through the `resources.*` toggles below.
 
 ## Features
 
@@ -91,62 +86,57 @@ Enabled by default. Disable to hide the match-to-area and ignore row actions (pl
 ## Resources
 
 ```php
-'countries' => [
-    'enabled' => true,
-    'read_only' => true,
-    'model' => \AIArmada\Addressing\Models\AddressCountry::class,
+'resources' => [
+    'countries' => [
+        'enabled' => true,
+        'read_only' => true,
+        'model' => \AIArmada\Addressing\Models\AddressCountry::class,
+    ],
+
+    'states' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\State::class,
+    ],
+
+    'cities' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\City::class,
+    ],
+
+    'areas' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\AddressArea::class,
+    ],
+
+    'postal_codes' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\PostalCode::class,
+    ],
+
+    'resolution_gaps' => [
+        'enabled' => true,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\ResolutionGap::class,
+    ],
+
+    'addresses' => [
+        'enabled' => false,
+        'read_only' => false,
+        'model' => \AIArmada\Addressing\Models\Address::class,
+    ],
+
+    'snapshots' => [
+        'enabled' => false,
+        'read_only' => true,
+        'model' => \AIArmada\Addressing\Models\AddressSnapshot::class,
+    ],
 ],
 ```
 
-```php
-'states' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\State::class,
-],
-
-'cities' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\City::class,
-],
-```
-
-```php
-'areas' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\AddressArea::class,
-],
-
-'postal_codes' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\PostalCode::class,
-],
-
-'resolution_gaps' => [
-    'enabled' => true,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\ResolutionGap::class,
-],
-```
-
-```php
-'addresses' => [
-    'enabled' => false,
-    'read_only' => false,
-    'model' => \AIArmada\Addressing\Models\Address::class,
-],
-```
-
-```php
-'snapshots' => [
-    'enabled' => false,
-    'read_only' => true,
-    'model' => \AIArmada\Addressing\Models\AddressSnapshot::class,
-],
-```
-
-> **danger**
-> Do not enable `addresses` or `snapshots` in a tenant-aware application until owner-safe queries and policies have been verified.
+:::danger
+Do not enable `addresses` or `snapshots` in a tenant-aware application until owner-safe queries and policies have been verified.
+:::
