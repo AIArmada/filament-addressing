@@ -41,6 +41,10 @@ Use this to control menu visibility, grouping, ordering, and icons.
 The `enabled` flag controls whether the adapter registers the resource with the Filament panel. The `sort` value is the base order for country, state, city, area, postcode, address, snapshot, and resolution gap resources.
 Each resource reads its icon from `navigation.icons.*`.
 
+## Tables
+
+This package has no `tables` config section. Table behaviour is configured per resource through the `resources.*` toggles below.
+
 ## Features
 
 ```php
@@ -137,6 +141,5 @@ Enabled by default. Disable to hide the match-to-area and ignore row actions (pl
 ],
 ```
 
-:::danger
-Do not enable `addresses` or `snapshots` in a tenant-aware application until owner-safe queries and policies have been verified.
-:::
+> **danger**
+> Do not enable `addresses` or `snapshots` in a tenant-aware application until owner-safe queries and policies have been verified.
